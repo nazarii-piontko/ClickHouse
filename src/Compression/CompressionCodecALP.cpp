@@ -246,52 +246,58 @@ private:
         T value;
     };
 
+    struct BlockState
+    {
+        EncodingParams params;
+
+        alignas(64) Int64 encoded_floats[ALP_MAX_BLOCK_FLOAT_COUNT];
+        UInt32 encoded_float_count;
+
+        alignas(64) UInt64 bitpacked[ALP_MAX_BLOCK_FLOAT_COUNT];
+        UInt32 bitpacked_bytes;
+
+        UInt8 bit_width;
+        Int64 frame_of_reference;
+
+        EncodingException exceptions[ALP_MAX_BLOCK_FLOAT_COUNT];
+        UInt32 exceptions_count;
+    };
+
     std::vector<EncodingParams> param_candidates;
-
-    EncodingParams block_params;
-
-    alignas(64) Int64 block_encoded_floats[ALP_MAX_BLOCK_FLOAT_COUNT];
-    alignas(64) UInt64 block_bitpacked[ALP_MAX_BLOCK_FLOAT_COUNT];
-    UInt32 block_encoded_float_count;
-    UInt32 block_bitpacked_bytes;
-    UInt8 block_bit_width;
-    Int64 block_frame_of_reference;
-
-    EncodingException block_exceptions[ALP_MAX_BLOCK_FLOAT_COUNT];
-    UInt32 block_exceptions_count;
+    BlockState block;
 
     char * encodeBlock(const char * source, const UInt16 float_count, char * dest)
     {
-        encodeBlockToBuffer(source, float_count);
+        encodeBlockToState(source, float_count);
 
-        const size_t total_encoded_bytes = ALP_BLOCK_HEADER_SIZE + block_bitpacked_bytes + block_exceptions_count * (sizeof(UInt16) + sizeof(T));
+        const size_t total_encoded_bytes = ALP_BLOCK_HEADER_SIZE + block.bitpacked_bytes + block.exceptions_count * (sizeof(UInt16) + sizeof(T));
         const size_t total_unencoded_size = ALP_UNENCODED_BLOCK_HEADER_SIZE + float_count * sizeof(T);
         if (total_encoded_bytes >= total_unencoded_size) // No compression gain
             return writeUnencoded(source, float_count, dest);
 
         // Exponent and Fraction Indices
-        *dest++ = block_params.exponent;
-        *dest++ = block_params.fraction;
+        *dest++ = block.params.exponent;
+        *dest++ = block.params.fraction;
 
         // Exception Count
-        unalignedStoreLittleEndian<UInt16>(dest, static_cast<UInt16>(block_exceptions_count));
+        unalignedStoreLittleEndian<UInt16>(dest, static_cast<UInt16>(block.exceptions_count));
         dest += sizeof(UInt16);
 
         // Encoding Bit-Width
-        *dest++ = block_bit_width;
+        *dest++ = block.bit_width;
 
         // Frame of Reference Value
-        unalignedStoreLittleEndian<Int64>(dest, block_frame_of_reference);
+        unalignedStoreLittleEndian<Int64>(dest, block.frame_of_reference);
         dest += sizeof(Int64);
 
         // Write Encoded Values
-        memcpy(dest, block_bitpacked, block_bitpacked_bytes);
-        dest += block_bitpacked_bytes;
+        memcpy(dest, block.bitpacked, block.bitpacked_bytes);
+        dest += block.bitpacked_bytes;
 
         // Write Exceptions
-        for (UInt32 i = 0; i < block_exceptions_count; ++i)
+        for (UInt32 i = 0; i < block.exceptions_count; ++i)
         {
-            const EncodingException & exception = block_exceptions[i];
+            const EncodingException & exception = block.exceptions[i];
             unalignedStoreLittleEndian<UInt16>(dest, exception.index);
             unalignedStoreLittleEndian<T>(dest + sizeof(UInt16), exception.value);
             dest += sizeof(UInt16) + sizeof(T);
@@ -300,12 +306,12 @@ private:
         return dest;
     }
 
-    const char * encodeBlockToBuffer(const char * source, const UInt16 float_count)
+    const char * encodeBlockToState(const char * source, const UInt16 float_count)
     {
-        block_params = selectBlockParams(source, float_count);
+        block.params = selectBlockParams(source, float_count);
 
-        block_encoded_float_count = 0;
-        block_exceptions_count = 0;
+        block.encoded_float_count = 0;
+        block.exceptions_count = 0;
 
         Int64 min = std::numeric_limits<Int64>::max();
         Int64 max = std::numeric_limits<Int64>::min();
@@ -313,10 +319,10 @@ private:
         for (UInt16 i = 0; i < float_count; ++i, source += sizeof(T))
         {
             const T value = unalignedLoadLittleEndian<T>(source);
-            const Int64 value_enc = ALPFloatUtils<T>::encodeValue(value, block_params.exponent, block_params.fraction);
-            const T value_dec = ALPFloatUtils<T>::decodeValue(value_enc, block_params.exponent, block_params.fraction);
+            const Int64 value_enc = ALPFloatUtils<T>::encodeValue(value, block.params.exponent, block.params.fraction);
+            const T value_dec = ALPFloatUtils<T>::decodeValue(value_enc, block.params.exponent, block.params.fraction);
 
-            block_encoded_floats[block_encoded_float_count++] = value_enc;
+            block.encoded_floats[block.encoded_float_count++] = value_enc;
 
             if (likely(value == value_dec))
             {
@@ -324,24 +330,24 @@ private:
                 max = std::max(value_enc, max);
             }
             else
-                block_exceptions[block_exceptions_count++] = {i, value};
+                block.exceptions[block.exceptions_count++] = {i, value};
         }
 
-        block_frame_of_reference = min;
-        block_bit_width = calculateBitWidth(min, max);
-        block_bitpacked_bytes = ALP::FFOR::calculateBitpackedSize(block_bit_width);
+        block.frame_of_reference = min;
+        block.bit_width = calculateBitWidth(min, max);
+        block.bitpacked_bytes = ALP::FFOR::calculateBitpackedSize(block.bit_width);
 
         // Fill exceptions positions with min value to simplify FOR encoding
-        for (UInt32 i = 0; i < block_exceptions_count; ++i)
-            block_encoded_floats[block_exceptions[i].index] = block_frame_of_reference;
+        for (UInt32 i = 0; i < block.exceptions_count; ++i)
+            block.encoded_floats[block.exceptions[i].index] = block.frame_of_reference;
 
         // Fill remaining positions with min value (if any)
-        std::fill(block_encoded_floats + block_encoded_float_count, block_encoded_floats + ALP_MAX_BLOCK_FLOAT_COUNT, block_frame_of_reference);
+        std::fill(block.encoded_floats + block.encoded_float_count, block.encoded_floats + ALP_MAX_BLOCK_FLOAT_COUNT, block.frame_of_reference);
 
-        const auto *ffor_in = reinterpret_cast<const UInt64 *>(block_encoded_floats);
-        UInt64 * ffor_out = block_bitpacked;
-        const auto *ffor_base_p = reinterpret_cast<const UInt64 *>(&block_frame_of_reference);
-        ALP::FFOR::ffor(ffor_in, ffor_out, block_bit_width, ffor_base_p);
+        const auto *ffor_in = reinterpret_cast<const UInt64 *>(block.encoded_floats);
+        UInt64 * ffor_out = block.bitpacked;
+        const auto *ffor_base_p = reinterpret_cast<const UInt64 *>(&block.frame_of_reference);
+        ALP::FFOR::ffor(ffor_in, ffor_out, block.bit_width, ffor_base_p);
 
         return source;
     }
@@ -477,7 +483,7 @@ private:
             param_candidates.push_back(estimations[i].params);
     }
 
-    UInt32 estimateEncodedSize(const T * const source, const UInt32 float_count, const EncodingParams & params)
+    static UInt32 estimateEncodedSize(const T * const source, const UInt32 float_count, const EncodingParams & params)
     {
         Int64 min = std::numeric_limits<Int64>::max();
         Int64 max = std::numeric_limits<Int64>::min();
@@ -545,8 +551,13 @@ public:
     }
 
 private:
-    alignas(64) Int64 block_encoded[ALP_MAX_BLOCK_FLOAT_COUNT];
-    alignas(64) UInt64 block_bitpacked[ALP_MAX_BLOCK_FLOAT_COUNT];
+    struct BlockState
+    {
+        alignas(64) Int64 encoded[ALP_MAX_BLOCK_FLOAT_COUNT];
+        alignas(64) UInt64 bitpacked[ALP_MAX_BLOCK_FLOAT_COUNT];
+    };
+
+    BlockState block;
 
     void decodeBlock(const char * & source, const char * source_end, char * & dest, const char * dest_end, const UInt16 float_count)
     {
@@ -574,18 +585,18 @@ private:
         source += sizeof(Int64);
 
         UInt32 bitpacked_bytes_size = ALP::FFOR::calculateBitpackedSize(bit_width);
-        memcpy(block_bitpacked, source, bitpacked_bytes_size);
+        memcpy(block.bitpacked, source, bitpacked_bytes_size);
         source += bitpacked_bytes_size;
 
-        const UInt64 * unffor_in = block_bitpacked;
-        auto *unffor_out =  reinterpret_cast<UInt64 *>(block_encoded);
+        const UInt64 * unffor_in = block.bitpacked;
+        auto *unffor_out =  reinterpret_cast<UInt64 *>(block.encoded);
         const auto *unffor_base_p = reinterpret_cast<const UInt64 *>(&frame_of_reference);
         ALP::FFOR::unffor(unffor_in, unffor_out, bit_width, unffor_base_p);
 
         char * dest_start = dest;
         for (UInt32 i = 0; i < float_count; ++i)
         {
-            const T decoded_value = ALPFloatUtils<T>::decodeValue(block_encoded[i], exponent, fraction);
+            const T decoded_value = ALPFloatUtils<T>::decodeValue(block.encoded[i], exponent, fraction);
 
             unalignedStoreLittleEndian<T>(dest, decoded_value);
             dest += sizeof(T);
