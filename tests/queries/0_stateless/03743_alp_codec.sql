@@ -65,3 +65,4 @@ FROM system.parts
 WHERE database = currentDatabase() AND active AND table IN ('alp64')
 GROUP BY table
 ORDER BY compression_ratio DESC;
+
