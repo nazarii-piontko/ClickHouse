@@ -1,4 +1,3 @@
-#include <Compression/ALP/ffor.h>
 #include <Compression/CompressionFactory.h>
 #include <Compression/CompressionInfo.h>
 #include <Compression/ICompressionCodec.h>
@@ -198,6 +197,260 @@ struct ALPFloatUtils
     }
 };
 
+constexpr unsigned DEFAULT_SIZE = 1024;
+
+template <typename T, unsigned bits, unsigned step, unsigned size = DEFAULT_SIZE>
+__attribute__((always_inline)) inline
+void ffor_kernel(const T * __restrict in, T * __restrict out, T base, unsigned i, T& tmp) {
+    constexpr unsigned width = sizeof(T) * 8;
+    constexpr unsigned iterations = size / width;
+
+    constexpr T mask = bits < width ? (T{1} << bits) - 1 : ~T{0};
+
+    constexpr unsigned bit_shift = (step * bits) % width;
+
+    if constexpr (bit_shift < bits) {
+        if constexpr (step > 0) {
+            constexpr unsigned out_shift = iterations * (((step - 1) * bits) / width);
+            *(out + out_shift + i) = tmp;
+        }
+
+        if constexpr (step >= width)
+            return;
+
+        if constexpr (bit_shift > 0 && step > 0) {
+            constexpr unsigned prev_in_shift = iterations * (step - 1);
+            T src = *(in + prev_in_shift + i) - base;
+            src = src & mask;
+            tmp = src >> (bits - bit_shift);
+        } else {
+            tmp = 0;
+        }
+    }
+
+    constexpr unsigned in_shift = iterations * step;
+    T src = *(in + in_shift + i) - base;
+    src = src & mask;
+    tmp |= src << bit_shift;
+}
+
+template <typename T, unsigned bits, unsigned size = DEFAULT_SIZE>
+void ffor(const T * __restrict in, T * __restrict out, T base) {
+    if constexpr (bits == 0)
+        return;
+
+    constexpr unsigned bit_width = sizeof(T) * 8;
+    constexpr unsigned iterations = size / bit_width;
+
+    for (unsigned i = 0; i < iterations; ++i) {
+        [&]<unsigned... step>(std::integer_sequence<unsigned, step ...>) __attribute__((always_inline)) {
+            T tmp = 0;
+            ((ffor_kernel<T, bits, step, size>(in, out, base, i, tmp)), ...);
+        }(std::make_integer_sequence<unsigned, bit_width + 1>{});
+    }
+}
+
+template <typename T, unsigned bits, unsigned step, unsigned size = DEFAULT_SIZE>
+__attribute__((always_inline)) inline
+void unffor_kernel(const T * __restrict in, T * __restrict out, T base, unsigned i, T& reg) {
+    constexpr unsigned width = sizeof(T) * 8;
+    constexpr unsigned iterations = size / width;
+
+    if constexpr (bits == 0)
+        out[i + iterations * step] = base;
+    else if constexpr (bits == width)
+        out[i + iterations * step] = in[i + iterations * step] + base;
+    else {
+        constexpr unsigned bit_shift = (step * bits) % width;
+        constexpr unsigned bits_to_full = width - bit_shift;
+        constexpr unsigned in_shift = iterations * ((step + 1) * bits / width);
+
+        T tmp;
+
+        if constexpr (bits_to_full < bits) {
+            constexpr unsigned shift = bits - bits_to_full;
+            constexpr T mask1 = (T{1} << bits_to_full) - 1;
+            constexpr T mask2 = (T{1} << shift) - 1;
+
+            tmp = (reg >> bit_shift) & mask1;
+            reg = in[i + in_shift];
+            tmp |= (reg & mask2) << bits_to_full;
+        } else {
+            if constexpr (bit_shift == 0)
+                reg = in[i + in_shift];
+
+            constexpr T mask = (T{1} << bits) - 1;
+            tmp = (reg >> bit_shift) & mask;
+        }
+
+        tmp += base;
+        out[i + iterations * step] = tmp;
+    }
+}
+
+template <typename T, unsigned bits, unsigned size = DEFAULT_SIZE>
+void unffor(const T * __restrict in, T * __restrict out, T base) {
+    constexpr unsigned bit_width = sizeof(T) * 8;
+    constexpr unsigned iterations = size / bit_width;
+
+    for (unsigned i = 0; i < iterations; ++i) {
+        [&]<unsigned... step>(std::integer_sequence<unsigned, step ...>) __attribute__((always_inline)) {
+            T reg = 0;
+            ((unffor_kernel<T, bits, step, size>(in, out, base, i, reg)), ...);
+        }(std::make_integer_sequence<unsigned, bit_width>{});
+    }
+}
+
+template <unsigned size = DEFAULT_SIZE>
+void ffor(const uint64_t* __restrict in, uint64_t* __restrict out, unsigned bits, uint64_t base) {
+    assert(bits <= 64);
+    switch (bits) {
+        case 0:  ffor<uint64_t, 0,  size>(in, out, base); break;
+        case 1:  ffor<uint64_t, 1,  size>(in, out, base); break;
+        case 2:  ffor<uint64_t, 2,  size>(in, out, base); break;
+        case 3:  ffor<uint64_t, 3,  size>(in, out, base); break;
+        case 4:  ffor<uint64_t, 4,  size>(in, out, base); break;
+        case 5:  ffor<uint64_t, 5,  size>(in, out, base); break;
+        case 6:  ffor<uint64_t, 6,  size>(in, out, base); break;
+        case 7:  ffor<uint64_t, 7,  size>(in, out, base); break;
+        case 8:  ffor<uint64_t, 8,  size>(in, out, base); break;
+        case 9:  ffor<uint64_t, 9,  size>(in, out, base); break;
+        case 10: ffor<uint64_t, 10, size>(in, out, base); break;
+        case 11: ffor<uint64_t, 11, size>(in, out, base); break;
+        case 12: ffor<uint64_t, 12, size>(in, out, base); break;
+        case 13: ffor<uint64_t, 13, size>(in, out, base); break;
+        case 14: ffor<uint64_t, 14, size>(in, out, base); break;
+        case 15: ffor<uint64_t, 15, size>(in, out, base); break;
+        case 16: ffor<uint64_t, 16, size>(in, out, base); break;
+        case 17: ffor<uint64_t, 17, size>(in, out, base); break;
+        case 18: ffor<uint64_t, 18, size>(in, out, base); break;
+        case 19: ffor<uint64_t, 19, size>(in, out, base); break;
+        case 20: ffor<uint64_t, 20, size>(in, out, base); break;
+        case 21: ffor<uint64_t, 21, size>(in, out, base); break;
+        case 22: ffor<uint64_t, 22, size>(in, out, base); break;
+        case 23: ffor<uint64_t, 23, size>(in, out, base); break;
+        case 24: ffor<uint64_t, 24, size>(in, out, base); break;
+        case 25: ffor<uint64_t, 25, size>(in, out, base); break;
+        case 26: ffor<uint64_t, 26, size>(in, out, base); break;
+        case 27: ffor<uint64_t, 27, size>(in, out, base); break;
+        case 28: ffor<uint64_t, 28, size>(in, out, base); break;
+        case 29: ffor<uint64_t, 29, size>(in, out, base); break;
+        case 30: ffor<uint64_t, 30, size>(in, out, base); break;
+        case 31: ffor<uint64_t, 31, size>(in, out, base); break;
+        case 32: ffor<uint64_t, 32, size>(in, out, base); break;
+        case 33: ffor<uint64_t, 33, size>(in, out, base); break;
+        case 34: ffor<uint64_t, 34, size>(in, out, base); break;
+        case 35: ffor<uint64_t, 35, size>(in, out, base); break;
+        case 36: ffor<uint64_t, 36, size>(in, out, base); break;
+        case 37: ffor<uint64_t, 37, size>(in, out, base); break;
+        case 38: ffor<uint64_t, 38, size>(in, out, base); break;
+        case 39: ffor<uint64_t, 39, size>(in, out, base); break;
+        case 40: ffor<uint64_t, 40, size>(in, out, base); break;
+        case 41: ffor<uint64_t, 41, size>(in, out, base); break;
+        case 42: ffor<uint64_t, 42, size>(in, out, base); break;
+        case 43: ffor<uint64_t, 43, size>(in, out, base); break;
+        case 44: ffor<uint64_t, 44, size>(in, out, base); break;
+        case 45: ffor<uint64_t, 45, size>(in, out, base); break;
+        case 46: ffor<uint64_t, 46, size>(in, out, base); break;
+        case 47: ffor<uint64_t, 47, size>(in, out, base); break;
+        case 48: ffor<uint64_t, 48, size>(in, out, base); break;
+        case 49: ffor<uint64_t, 49, size>(in, out, base); break;
+        case 50: ffor<uint64_t, 50, size>(in, out, base); break;
+        case 51: ffor<uint64_t, 51, size>(in, out, base); break;
+        case 52: ffor<uint64_t, 52, size>(in, out, base); break;
+        case 53: ffor<uint64_t, 53, size>(in, out, base); break;
+        case 54: ffor<uint64_t, 54, size>(in, out, base); break;
+        case 55: ffor<uint64_t, 55, size>(in, out, base); break;
+        case 56: ffor<uint64_t, 56, size>(in, out, base); break;
+        case 57: ffor<uint64_t, 57, size>(in, out, base); break;
+        case 58: ffor<uint64_t, 58, size>(in, out, base); break;
+        case 59: ffor<uint64_t, 59, size>(in, out, base); break;
+        case 60: ffor<uint64_t, 60, size>(in, out, base); break;
+        case 61: ffor<uint64_t, 61, size>(in, out, base); break;
+        case 62: ffor<uint64_t, 62, size>(in, out, base); break;
+        case 63: ffor<uint64_t, 63, size>(in, out, base); break;
+        case 64: ffor<uint64_t, 64, size>(in, out, base); break;
+    }
+}
+
+template <unsigned size = DEFAULT_SIZE>
+void unffor(const uint64_t* __restrict in, uint64_t* __restrict out, unsigned bits, uint64_t base) {
+    assert(bits <= 64);
+    switch (bits) {
+        case 0:  unffor<uint64_t, 0,  size>(in, out, base); break;
+        case 1:  unffor<uint64_t, 1,  size>(in, out, base); break;
+        case 2:  unffor<uint64_t, 2,  size>(in, out, base); break;
+        case 3:  unffor<uint64_t, 3,  size>(in, out, base); break;
+        case 4:  unffor<uint64_t, 4,  size>(in, out, base); break;
+        case 5:  unffor<uint64_t, 5,  size>(in, out, base); break;
+        case 6:  unffor<uint64_t, 6,  size>(in, out, base); break;
+        case 7:  unffor<uint64_t, 7,  size>(in, out, base); break;
+        case 8:  unffor<uint64_t, 8,  size>(in, out, base); break;
+        case 9:  unffor<uint64_t, 9,  size>(in, out, base); break;
+        case 10: unffor<uint64_t, 10, size>(in, out, base); break;
+        case 11: unffor<uint64_t, 11, size>(in, out, base); break;
+        case 12: unffor<uint64_t, 12, size>(in, out, base); break;
+        case 13: unffor<uint64_t, 13, size>(in, out, base); break;
+        case 14: unffor<uint64_t, 14, size>(in, out, base); break;
+        case 15: unffor<uint64_t, 15, size>(in, out, base); break;
+        case 16: unffor<uint64_t, 16, size>(in, out, base); break;
+        case 17: unffor<uint64_t, 17, size>(in, out, base); break;
+        case 18: unffor<uint64_t, 18, size>(in, out, base); break;
+        case 19: unffor<uint64_t, 19, size>(in, out, base); break;
+        case 20: unffor<uint64_t, 20, size>(in, out, base); break;
+        case 21: unffor<uint64_t, 21, size>(in, out, base); break;
+        case 22: unffor<uint64_t, 22, size>(in, out, base); break;
+        case 23: unffor<uint64_t, 23, size>(in, out, base); break;
+        case 24: unffor<uint64_t, 24, size>(in, out, base); break;
+        case 25: unffor<uint64_t, 25, size>(in, out, base); break;
+        case 26: unffor<uint64_t, 26, size>(in, out, base); break;
+        case 27: unffor<uint64_t, 27, size>(in, out, base); break;
+        case 28: unffor<uint64_t, 28, size>(in, out, base); break;
+        case 29: unffor<uint64_t, 29, size>(in, out, base); break;
+        case 30: unffor<uint64_t, 30, size>(in, out, base); break;
+        case 31: unffor<uint64_t, 31, size>(in, out, base); break;
+        case 32: unffor<uint64_t, 32, size>(in, out, base); break;
+        case 33: unffor<uint64_t, 33, size>(in, out, base); break;
+        case 34: unffor<uint64_t, 34, size>(in, out, base); break;
+        case 35: unffor<uint64_t, 35, size>(in, out, base); break;
+        case 36: unffor<uint64_t, 36, size>(in, out, base); break;
+        case 37: unffor<uint64_t, 37, size>(in, out, base); break;
+        case 38: unffor<uint64_t, 38, size>(in, out, base); break;
+        case 39: unffor<uint64_t, 39, size>(in, out, base); break;
+        case 40: unffor<uint64_t, 40, size>(in, out, base); break;
+        case 41: unffor<uint64_t, 41, size>(in, out, base); break;
+        case 42: unffor<uint64_t, 42, size>(in, out, base); break;
+        case 43: unffor<uint64_t, 43, size>(in, out, base); break;
+        case 44: unffor<uint64_t, 44, size>(in, out, base); break;
+        case 45: unffor<uint64_t, 45, size>(in, out, base); break;
+        case 46: unffor<uint64_t, 46, size>(in, out, base); break;
+        case 47: unffor<uint64_t, 47, size>(in, out, base); break;
+        case 48: unffor<uint64_t, 48, size>(in, out, base); break;
+        case 49: unffor<uint64_t, 49, size>(in, out, base); break;
+        case 50: unffor<uint64_t, 50, size>(in, out, base); break;
+        case 51: unffor<uint64_t, 51, size>(in, out, base); break;
+        case 52: unffor<uint64_t, 52, size>(in, out, base); break;
+        case 53: unffor<uint64_t, 53, size>(in, out, base); break;
+        case 54: unffor<uint64_t, 54, size>(in, out, base); break;
+        case 55: unffor<uint64_t, 55, size>(in, out, base); break;
+        case 56: unffor<uint64_t, 56, size>(in, out, base); break;
+        case 57: unffor<uint64_t, 57, size>(in, out, base); break;
+        case 58: unffor<uint64_t, 58, size>(in, out, base); break;
+        case 59: unffor<uint64_t, 59, size>(in, out, base); break;
+        case 60: unffor<uint64_t, 60, size>(in, out, base); break;
+        case 61: unffor<uint64_t, 61, size>(in, out, base); break;
+        case 62: unffor<uint64_t, 62, size>(in, out, base); break;
+        case 63: unffor<uint64_t, 63, size>(in, out, base); break;
+        case 64: unffor<uint64_t, 64, size>(in, out, base); break;
+    }
+}
+
+inline uint32_t calculateBitpackedSize(uint8_t bit_width)
+{
+    assert(bit_width <= 64);
+    return bit_width * 1024 / 8;
+}
+
 template <FLOAT T>
 class ALPCodecEncoder
 {
@@ -331,7 +584,7 @@ private:
 
         block.frame_of_reference = min;
         block.bit_width = calculateBitWidth(min, max);
-        block.bitpacked_bytes = ALP::FFOR::calculateBitpackedSize(block.bit_width);
+        block.bitpacked_bytes = calculateBitpackedSize(block.bit_width);
 
         // Fill exceptions positions with frame_of_reference value, it becomes zero after FOR encoding
         for (UInt32 i = 0; i < block.exceptions_count; ++i)
@@ -349,9 +602,8 @@ private:
     {
         const auto * ffor_in = reinterpret_cast<const UInt64 *>(block.encoded_floats);
         UInt64 * ffor_out = block.bitpacked;
-        const auto * ffor_base_p = reinterpret_cast<const UInt64 *>(&block.frame_of_reference);
 
-        ALP::FFOR::ffor(ffor_in, ffor_out, block.bit_width, ffor_base_p);
+        ffor(ffor_in, ffor_out, block.bit_width, block.frame_of_reference);
     }
 
     static char * writeUnencoded(const char * source, const UInt16 float_count, char * dest)
@@ -585,7 +837,7 @@ private:
 
         // Read bit-width
         const UInt8 bit_width = static_cast<UInt8>(*source++);
-        const UInt32 bitpacked_size = ALP::FFOR::calculateBitpackedSize(bit_width);
+        const UInt32 bitpacked_size = calculateBitpackedSize(bit_width);
 
         // Read frame of reference
         const Int64 frame_of_reference = unalignedLoadLittleEndian<Int64>(source);
@@ -627,9 +879,8 @@ private:
     {
         const UInt64 * unffor_in = block.bitpacked;
         auto * unffor_out = reinterpret_cast<UInt64 *>(block.encoded);
-        const auto * unffor_base_p = reinterpret_cast<const UInt64 *>(&frame_of_reference);
 
-        ALP::FFOR::unffor(unffor_in, unffor_out, bit_width, unffor_base_p);
+        unffor(unffor_in, unffor_out, bit_width, frame_of_reference);
     }
 
     static void processUnencodedBlock(const char * & source, const char * source_end, char * & dest, const char * dest_end, const UInt16 float_count)
