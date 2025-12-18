@@ -26,22 +26,22 @@ template <typename T>
 concept UnsignedInteger = std::is_integral_v<T> && std::is_unsigned_v<T> && !std::is_same_v<T, bool>;
 
 template <UnsignedInteger T>
-consteval UInt16 get_bit_width()
+consteval UInt16 get_width()
 {
-    return sizeof(T) * 8u;
+    return sizeof(T) * 8;
 }
 
 template <UnsignedInteger T, UInt16 values = DEFAULT_VALUES>
 consteval UInt16 get_iterations()
 {
-    constexpr UInt16 width = get_bit_width<T>();
+    constexpr UInt16 width = get_width<T>();
     return values / width;
 }
 
 template <UnsignedInteger T, UInt16 bits, UInt16 step, UInt16 values = DEFAULT_VALUES>
 ALWAYS_INLINE void bitPackStep(const T * __restrict in, T * __restrict out, const T base, const UInt16 index, T & agg)
 {
-    constexpr UInt16 width = get_bit_width<T>();
+    constexpr UInt16 width = get_width<T>();
     static_assert(bits <= width);
     static_assert(step <= width);
 
@@ -50,10 +50,8 @@ ALWAYS_INLINE void bitPackStep(const T * __restrict in, T * __restrict out, cons
     if constexpr (bits > 0 && bits < width)
     {
         constexpr UInt16 shift = (step * bits) % width;
-
         constexpr T mask = (T{1} << bits) - 1;
 
-        // Check if a new output word is needed
         if constexpr (step > 0 && shift < bits)
         {
             constexpr UInt16 out_offset = iterations * (((step - 1) * bits) / width);
@@ -96,11 +94,11 @@ ALWAYS_INLINE void bitPackStep(const T * __restrict in, T * __restrict out, cons
 template <UnsignedInteger T, UInt16 bits, UInt16 values = DEFAULT_VALUES>
 void bitPack(const T * __restrict in, T * __restrict out, const T base)
 {
-    constexpr UInt16 width = get_bit_width<T>();
-    static_assert(bits <= width);
-
     if constexpr (bits == 0)
         return;
+
+    constexpr UInt16 width = get_width<T>();
+    static_assert(bits <= width);
 
     constexpr UInt16 iterations = get_iterations<T, values>();
 
@@ -117,61 +115,58 @@ void bitPack(const T * __restrict in, T * __restrict out, const T base)
 template <UnsignedInteger T, UInt16 bits, UInt16 step, UInt16 values = DEFAULT_VALUES>
 ALWAYS_INLINE void bitUnpackStep(const T * __restrict in, T * __restrict out, const T base, const UInt16 index, T & pack)
 {
-    constexpr UInt16 width = get_bit_width<T>();
+    constexpr UInt16 width = get_width<T>();
     static_assert(bits <= width);
-    static_assert(step <= width);
+    static_assert(step < width);
 
     constexpr UInt16 iterations = get_iterations<T, values>();
+    constexpr UInt16 out_offset = iterations * step;
 
     if constexpr (bits == 0)
-        out[index + iterations * step] = base;
+        out[index + out_offset] = base;
     else if constexpr (bits == width)
-    {
-        constexpr UInt16 offset = iterations * step;
-        out[offset + index] = in[offset + index] + base;
-    }
+        out[index + out_offset] = in[index + out_offset] + base;
     else
     {
-        constexpr UInt16 bit_shift = (step * bits) % width;
-        constexpr UInt16 bits_to_full = width - bit_shift;
+        constexpr UInt16 shift = (step * bits) % width;
+        constexpr UInt16 bits_to_full_width = width - shift;
         constexpr UInt16 in_offset = iterations * ((step + 1) * bits / width);
+        constexpr bool is_in_value_available = step < width - 1;
 
         T v;
-
-        if constexpr (bits_to_full < bits)
+        if constexpr (bits_to_full_width < bits)
         {
-            constexpr T mask1 = (T{1} << bits_to_full) - 1;
-            constexpr T mask2 = (T{1} << (bits - bits_to_full)) - 1;
+            constexpr T mask1 = (T{1} << bits_to_full_width) - T{1};
+            constexpr T mask2 = (T{1} << (bits - bits_to_full_width)) - T{1};
 
-            v = (pack >> bit_shift) & mask1;
-            if constexpr (step < width - 1)
+            v = (pack >> shift) & mask1;
+            if constexpr (is_in_value_available)
             {
                 pack = in[index + in_offset];
-                v |= (pack & mask2) << bits_to_full;
+                v |= (pack & mask2) << bits_to_full_width;
             }
         }
         else
         {
-            if constexpr (bit_shift == 0)
+            if constexpr (shift == 0)
             {
-                if constexpr (step < width - 1)
+                if constexpr (is_in_value_available)
                     pack = in[index + in_offset];
                 else
                     pack = 0;
             }
 
-            constexpr T mask = (T{1} << bits) - 1;
-            v = (pack >> bit_shift) & mask;
+            constexpr T mask = (T{1} << bits) - T{1};
+            v = (pack >> shift) & mask;
         }
 
-        v += base;
-        out[index + iterations * step] = v;
+        out[index + out_offset] = v + base;
     }
 }
 
 template <UnsignedInteger T, UInt16 bits, UInt16 values = DEFAULT_VALUES>
 void bitUnpack(const T * __restrict in, T * __restrict out, const T base) {
-    constexpr UInt16 width = get_bit_width<T>();
+    constexpr UInt16 width = get_width<T>();
     static_assert(bits <= width);
 
     constexpr UInt16 iterations = get_iterations<T, values>();
